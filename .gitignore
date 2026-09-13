@@ -1,0 +1,7 @@
+/target
+/ffmpeg
+/slang-shaders
+
+*.mp4
+*.png
+*.jpg
