@@ -1,6 +1,6 @@
 use std::mem::ManuallyDrop;
 
-use ash::{vk, Device, Entry, Instance};
+use ash::{Device, Entry, Instance, vk};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use librashader::runtime::vk::VulkanImage;
 
@@ -22,8 +22,8 @@ impl HeadlessVulkan {
         unsafe {
             let entry = Entry::load()?;
 
-            let app_info = vk::ApplicationInfo::default()
-                .api_version(vk::make_api_version(0, 1, 3, 0));
+            let app_info =
+                vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
             let create_info = vk::InstanceCreateInfo::default()
                 .application_info(&app_info)
                 .enabled_extension_names(&[]);
@@ -140,10 +140,7 @@ impl HeadlessVulkan {
 
             Ok(VulkanImage {
                 image,
-                size: librashader::runtime::Size {
-                    width,
-                    height,
-                },
+                size: librashader::runtime::Size { width, height },
                 format,
             })
         }
@@ -372,10 +369,14 @@ fn find_queue_family(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
 ) -> anyhow::Result<u32> {
-    let queue_families = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+    let queue_families =
+        unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
 
     for (index, family) in queue_families.iter().enumerate() {
-        if family.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE) {
+        if family
+            .queue_flags
+            .contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE)
+        {
             return Ok(index as u32);
         }
     }

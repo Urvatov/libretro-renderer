@@ -2,7 +2,10 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "libretro-renderer", about = "Offline RetroArch shader renderer for video and image files")]
+#[command(
+    name = "libretro-renderer",
+    about = "Offline RetroArch shader renderer for video and image files"
+)]
 pub struct Args {
     /// Input video or image file path
     #[arg(short, long)]

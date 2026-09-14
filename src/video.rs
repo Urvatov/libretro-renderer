@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread::JoinHandle;
 
 use anyhow::{Context, Result};
@@ -31,11 +31,14 @@ pub fn is_image_path(path: &Path) -> bool {
 pub fn probe_video(path: &Path) -> Result<VideoInfo> {
     let output = Command::new("ffprobe")
         .args([
-            "-v", "quiet",
-            "-print_format", "json",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
             "-show_format",
             "-show_streams",
-            "-select_streams", "v:0",
+            "-select_streams",
+            "v:0",
             &path.to_string_lossy(),
         ])
         .output()
@@ -46,8 +49,8 @@ pub fn probe_video(path: &Path) -> Result<VideoInfo> {
         anyhow::bail!("ffprobe failed: {}", stderr);
     }
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .context("Failed to parse ffprobe JSON output")?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("Failed to parse ffprobe JSON output")?;
 
     let stream = json["streams"]
         .as_array()
@@ -57,9 +60,7 @@ pub fn probe_video(path: &Path) -> Result<VideoInfo> {
     let width = stream["width"].as_u64().unwrap_or(0) as u32;
     let height = stream["height"].as_u64().unwrap_or(0) as u32;
 
-    let r_frame_rate = stream["r_frame_rate"]
-        .as_str()
-        .unwrap_or("30/1");
+    let r_frame_rate = stream["r_frame_rate"].as_str().unwrap_or("30/1");
     let parts: Vec<&str> = r_frame_rate.split('/').collect();
     let fps: f64 = if parts.len() == 2 {
         let num: f64 = parts[0].parse().unwrap_or(30.0);
@@ -152,12 +153,16 @@ impl VideoDecoder {
                                 eof = true;
                                 break;
                             }
-                            let _ = tx.send(Err("Unexpected end of ffmpeg output mid-frame".to_string()));
+                            let _ = tx
+                                .send(Err("Unexpected end of ffmpeg output mid-frame".to_string()));
                             return;
                         }
                         Ok(n) => total_read += n,
                         Err(e) => {
-                            let _ = tx.send(Err(format!("Failed to read frame from ffmpeg stdout: {}", e)));
+                            let _ = tx.send(Err(format!(
+                                "Failed to read frame from ffmpeg stdout: {}",
+                                e
+                            )));
                             return;
                         }
                     }
@@ -232,11 +237,8 @@ impl VideoEncoder {
             .args(["-hide_banner", "-loglevel", "error"])
             .args(["-y"])
             .args([
-                "-f", "rawvideo",
-                "-pix_fmt", "rgba",
-                "-s", &size_str,
-                "-r", fps_str,
-                "-i", "pipe:0",
+                "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size_str, "-r", fps_str, "-i",
+                "pipe:0",
             ])
             .args(["-c:v", encoder_name])
             .args(["-crf", &crf.to_string()])
@@ -259,7 +261,10 @@ impl VideoEncoder {
         let writer_thread = std::thread::spawn(move || {
             for frame in rx {
                 if let Err(e) = stdin.write_all(&frame) {
-                    return Err(anyhow::anyhow!("Failed writing frame to ffmpeg stdin: {}", e));
+                    return Err(anyhow::anyhow!(
+                        "Failed writing frame to ffmpeg stdin: {}",
+                        e
+                    ));
                 }
             }
             drop(stdin);
@@ -285,14 +290,20 @@ impl VideoEncoder {
     pub fn finish(mut self) -> Result<()> {
         drop(self.sender.take());
         if let Some(h) = self.writer_thread.take() {
-            h.join().map_err(|_| anyhow::anyhow!("Encoder thread panicked"))??;
+            h.join()
+                .map_err(|_| anyhow::anyhow!("Encoder thread panicked"))??;
         }
 
-        let status = self.child.wait()
+        let status = self
+            .child
+            .wait()
             .context("Failed to wait for ffmpeg encoder")?;
 
         if !status.success() {
-            let stderr = self.child.stderr.as_mut()
+            let stderr = self
+                .child
+                .stderr
+                .as_mut()
                 .map(|e| {
                     let mut buf = String::new();
                     let _ = e.read_to_string(&mut buf);
@@ -306,22 +317,25 @@ impl VideoEncoder {
     }
 }
 
-pub fn mux_audio_video(
-    video_path: &Path,
-    source_path: &Path,
-    output_path: &Path,
-) -> Result<()> {
+pub fn mux_audio_video(video_path: &Path, source_path: &Path, output_path: &Path) -> Result<()> {
     let status = Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error"])
         .args([
-            "-i", &video_path.to_string_lossy(),
-            "-i", &source_path.to_string_lossy(),
-            "-c:v", "copy",
-            "-c:a", "copy",
-            "-map", "0:v:0",
-            "-map", "1:a:0?",
+            "-i",
+            &video_path.to_string_lossy(),
+            "-i",
+            &source_path.to_string_lossy(),
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0?",
             "-shortest",
-            "-y", &output_path.to_string_lossy(),
+            "-y",
+            &output_path.to_string_lossy(),
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

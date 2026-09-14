@@ -5,8 +5,8 @@ use ash::vk;
 use gpu_allocator::vulkan::Allocation;
 use indicatif::{ProgressBar, ProgressStyle};
 use librashader::presets::{ShaderFeatures, ShaderPreset};
-use librashader::runtime::vk::{FilterChain, FilterChainOptions, VulkanImage};
 use librashader::runtime::Viewport;
+use librashader::runtime::vk::{FilterChain, FilterChainOptions, VulkanImage};
 
 use crate::cli::Args;
 use crate::video::{self, VideoDecoder, VideoEncoder};
@@ -95,10 +95,8 @@ fn render_image(args: &Args) -> Result<()> {
         vk::Format::R8G8B8A8_UNORM,
         vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
     )?;
-    let (input_staging_buf, input_staging_alloc) = vk.create_staging_buffer(
-        input_pixels as u64,
-        gpu_allocator::MemoryLocation::CpuToGpu,
-    )?;
+    let (input_staging_buf, input_staging_alloc) =
+        vk.create_staging_buffer(input_pixels as u64, gpu_allocator::MemoryLocation::CpuToGpu)?;
     let (output_staging_buf, output_staging_alloc) = vk.create_staging_buffer(
         output_pixels as u64,
         gpu_allocator::MemoryLocation::GpuToCpu,
@@ -114,10 +112,7 @@ fn render_image(args: &Args) -> Result<()> {
 
     unsafe {
         // Upload image to staging buffer
-        let mapped = input_staging_alloc
-            .mapped_ptr()
-            .unwrap()
-            .as_ptr() as *mut u8;
+        let mapped = input_staging_alloc.mapped_ptr().unwrap().as_ptr() as *mut u8;
         let raw_bytes = img.as_raw();
         let copy_len = raw_bytes.len().min(input_pixels);
         std::ptr::copy_nonoverlapping(raw_bytes.as_ptr(), mapped, copy_len);
@@ -203,10 +198,7 @@ fn render_image(args: &Args) -> Result<()> {
     };
 
     unsafe {
-        let mapped = output_staging_alloc
-            .mapped_ptr()
-            .unwrap()
-            .as_ptr() as *const u8;
+        let mapped = output_staging_alloc.mapped_ptr().unwrap().as_ptr() as *const u8;
         let slice = std::slice::from_raw_parts(mapped, output_pixels);
 
         let out_img = image::RgbaImage::from_raw(output_w, output_h, slice.to_vec())
@@ -293,10 +285,8 @@ fn render_video(args: &Args) -> Result<()> {
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
         )?;
         // Input staging buffer: CPU writes, GPU reads (CpuToGpu)
-        let (input_staging_buf, input_staging_alloc) = vk.create_staging_buffer(
-            input_pixels as u64,
-            gpu_allocator::MemoryLocation::CpuToGpu,
-        )?;
+        let (input_staging_buf, input_staging_alloc) =
+            vk.create_staging_buffer(input_pixels as u64, gpu_allocator::MemoryLocation::CpuToGpu)?;
         // Output staging buffer: GPU writes, CPU reads (GpuToCpu - HOST_CACHED!)
         let (output_staging_buf, output_staging_alloc) = vk.create_staging_buffer(
             output_pixels as u64,
@@ -346,7 +336,9 @@ fn render_video(args: &Args) -> Result<()> {
     let pb = ProgressBar::new(info.total_frames);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+            )
             .unwrap(),
     );
 
@@ -377,11 +369,7 @@ fn render_video(args: &Args) -> Result<()> {
                     .size(vk::WHOLE_SIZE);
                 let _ = vk.device.invalidate_mapped_memory_ranges(&[range]);
 
-                let mapped = fr
-                    .output_staging_alloc
-                    .mapped_ptr()
-                    .unwrap()
-                    .as_ptr() as *const u8;
+                let mapped = fr.output_staging_alloc.mapped_ptr().unwrap().as_ptr() as *const u8;
                 let frame_slice = std::slice::from_raw_parts(mapped, output_pixels);
                 encoder.encode_frame(frame_slice.to_vec())?;
             }
@@ -395,11 +383,7 @@ fn render_video(args: &Args) -> Result<()> {
 
         unsafe {
             // Upload: copy decoded frame into staging buffer
-            let mapped = fr
-                .input_staging_alloc
-                .mapped_ptr()
-                .unwrap()
-                .as_ptr() as *mut u8;
+            let mapped = fr.input_staging_alloc.mapped_ptr().unwrap().as_ptr() as *mut u8;
             let copy_len = rgba_data.len().min(input_pixels);
             std::ptr::copy_nonoverlapping(rgba_data.as_ptr(), mapped, copy_len);
 
@@ -432,10 +416,7 @@ fn render_video(args: &Args) -> Result<()> {
             )?;
             filter_chain.frame(
                 &fr.input_image,
-                &Viewport::new_render_target_sized_origin(
-                    fr.output_image.clone(),
-                    None,
-                )?,
+                &Viewport::new_render_target_sized_origin(fr.output_image.clone(), None)?,
                 fr.cmd_filter,
                 submitted_count as usize,
                 None,
@@ -460,8 +441,7 @@ fn render_video(args: &Args) -> Result<()> {
             // Submit all GPU work for this frame
             let cmds = [fr.cmd_upload, fr.cmd_filter, fr.cmd_download];
             let submit_info = vk::SubmitInfo::default().command_buffers(&cmds);
-            vk.device
-                .queue_submit(vk.queue, &[submit_info], fr.fence)?;
+            vk.device.queue_submit(vk.queue, &[submit_info], fr.fence)?;
         }
 
         submitted_count += 1;
@@ -474,8 +454,7 @@ fn render_video(args: &Args) -> Result<()> {
         let fr = &mut frames[slot];
 
         unsafe {
-            vk.device
-                .wait_for_fences(&[fr.fence], true, u64::MAX)?;
+            vk.device.wait_for_fences(&[fr.fence], true, u64::MAX)?;
             vk.device.reset_fences(&[fr.fence])?;
 
             let range = vk::MappedMemoryRange::default()
@@ -484,11 +463,7 @@ fn render_video(args: &Args) -> Result<()> {
                 .size(vk::WHOLE_SIZE);
             let _ = vk.device.invalidate_mapped_memory_ranges(&[range]);
 
-            let mapped = fr
-                .output_staging_alloc
-                .mapped_ptr()
-                .unwrap()
-                .as_ptr() as *const u8;
+            let mapped = fr.output_staging_alloc.mapped_ptr().unwrap().as_ptr() as *const u8;
             let frame_slice = std::slice::from_raw_parts(mapped, output_pixels);
             encoder.encode_frame(frame_slice.to_vec())?;
         }
