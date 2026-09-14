@@ -1,6 +1,8 @@
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::thread::JoinHandle;
 
 use anyhow::{Context, Result};
 
@@ -12,6 +14,18 @@ pub struct VideoInfo {
     pub total_frames: u64,
     #[allow(dead_code)]
     pub duration_secs: f64,
+}
+
+pub fn is_image_path(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "bmp" | "webp" | "tga" | "tiff" | "tif" | "ico" | "ppm" | "qoi"
+    )
 }
 
 pub fn probe_video(path: &Path) -> Result<VideoInfo> {
@@ -77,17 +91,31 @@ pub fn probe_video(path: &Path) -> Result<VideoInfo> {
 
 pub struct VideoDecoder {
     child: Child,
-    frame_size: usize,
+    receiver: Receiver<Result<Vec<u8>, String>>,
+    reader_thread: Option<JoinHandle<()>>,
+    #[allow(dead_code)]
     frame_index: u64,
     #[allow(dead_code)]
     fps: f64,
 }
 
 impl VideoDecoder {
-    pub fn open(path: &Path, target_width: u32, target_height: u32, fps: f64) -> Result<Self> {
+    pub fn open(
+        path: &Path,
+        target_width: u32,
+        target_height: u32,
+        fps: f64,
+        hwaccel: &str,
+        queue_size: usize,
+    ) -> Result<Self> {
         let mut cmd = Command::new("ffmpeg");
-        cmd.args(["-hide_banner", "-loglevel", "error"])
-            .args(["-i", &path.to_string_lossy()])
+        cmd.args(["-hide_banner", "-loglevel", "error"]);
+
+        if hwaccel != "none" && !hwaccel.is_empty() {
+            cmd.args(["-hwaccel", hwaccel]);
+        }
+
+        cmd.args(["-i", &path.to_string_lossy()])
             .args(["-f", "rawvideo", "-pix_fmt", "rgba"]);
 
         if target_width > 0 && target_height > 0 {
@@ -96,7 +124,7 @@ impl VideoDecoder {
 
         cmd.arg("-");
 
-        let child = cmd
+        let mut child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -104,36 +132,65 @@ impl VideoDecoder {
             .context("Failed to spawn ffmpeg decoder. Is ffmpeg in PATH?")?;
 
         let frame_size = (target_width * target_height * 4) as usize;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
+
+        let (tx, rx) = sync_channel::<Result<Vec<u8>, String>>(queue_size.max(2));
+
+        let reader_thread = std::thread::spawn(move || {
+            loop {
+                let mut buf = vec![0u8; frame_size];
+                let mut total_read = 0;
+                let mut eof = false;
+
+                while total_read < frame_size {
+                    match stdout.read(&mut buf[total_read..]) {
+                        Ok(0) => {
+                            if total_read == 0 {
+                                eof = true;
+                                break;
+                            }
+                            let _ = tx.send(Err("Unexpected end of ffmpeg output mid-frame".to_string()));
+                            return;
+                        }
+                        Ok(n) => total_read += n,
+                        Err(e) => {
+                            let _ = tx.send(Err(format!("Failed to read frame from ffmpeg stdout: {}", e)));
+                            return;
+                        }
+                    }
+                }
+
+                if eof {
+                    break;
+                }
+
+                if tx.send(Ok(buf)).is_err() {
+                    break; // Receiver was dropped
+                }
+            }
+        });
 
         Ok(Self {
             child,
-            frame_size,
+            receiver: rx,
+            reader_thread: Some(reader_thread),
             frame_index: 0,
             fps,
         })
     }
 
     pub fn decode_next(&mut self) -> Result<Option<Vec<u8>>> {
-        let stdout = self.child.stdout.as_mut()
-            .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
-
-        let mut buf = vec![0u8; self.frame_size];
-        let mut total_read = 0;
-
-        while total_read < self.frame_size {
-            match stdout.read(&mut buf[total_read..])? {
-                0 => {
-                    if total_read == 0 {
-                        return Ok(None);
-                    }
-                    anyhow::bail!("Unexpected end of ffmpeg output mid-frame");
-                }
-                n => total_read += n,
+        match self.receiver.recv() {
+            Ok(Ok(frame)) => {
+                self.frame_index += 1;
+                Ok(Some(frame))
             }
+            Ok(Err(err)) => anyhow::bail!("{}", err),
+            Err(_) => Ok(None),
         }
-
-        self.frame_index += 1;
-        Ok(Some(buf))
     }
 
     #[allow(dead_code)]
@@ -143,6 +200,9 @@ impl VideoDecoder {
 
     pub fn finish(&mut self) -> Result<()> {
         let _ = self.child.kill();
+        if let Some(h) = self.reader_thread.take() {
+            let _ = h.join();
+        }
         let _ = self.child.wait();
         Ok(())
     }
@@ -150,7 +210,8 @@ impl VideoDecoder {
 
 pub struct VideoEncoder {
     child: Child,
-    frame_size: usize,
+    sender: Option<SyncSender<Vec<u8>>>,
+    writer_thread: Option<JoinHandle<Result<()>>>,
 }
 
 impl VideoEncoder {
@@ -163,10 +224,11 @@ impl VideoEncoder {
         crf: u32,
         preset: &str,
         pixel_format: &str,
+        queue_size: usize,
     ) -> Result<Self> {
         let size_str = format!("{}x{}", width, height);
 
-        let child = Command::new("ffmpeg")
+        let mut child = Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error"])
             .args(["-y"])
             .args([
@@ -187,24 +249,43 @@ impl VideoEncoder {
             .spawn()
             .context("Failed to spawn ffmpeg encoder. Is ffmpeg in PATH?")?;
 
-        let frame_size = (width * height * 4) as usize;
-
-        Ok(Self { child, frame_size })
-    }
-
-    pub fn encode_frame(&mut self, rgba_data: &[u8]) -> Result<()> {
-        let stdin = self.child.stdin.as_mut()
+        let mut stdin = child
+            .stdin
+            .take()
             .ok_or_else(|| anyhow::anyhow!("ffmpeg stdin not available"))?;
 
-        let write_len = rgba_data.len().min(self.frame_size);
-        stdin.write_all(&rgba_data[..write_len])?;
+        let (tx, rx) = sync_channel::<Vec<u8>>(queue_size.max(2));
 
+        let writer_thread = std::thread::spawn(move || {
+            for frame in rx {
+                if let Err(e) = stdin.write_all(&frame) {
+                    return Err(anyhow::anyhow!("Failed writing frame to ffmpeg stdin: {}", e));
+                }
+            }
+            drop(stdin);
+            Ok(())
+        });
+
+        Ok(Self {
+            child,
+            sender: Some(tx),
+            writer_thread: Some(writer_thread),
+        })
+    }
+
+    pub fn encode_frame(&mut self, rgba_data: Vec<u8>) -> Result<()> {
+        if let Some(sender) = &self.sender {
+            sender
+                .send(rgba_data)
+                .map_err(|_| anyhow::anyhow!("Encoder thread terminated prematurely"))?;
+        }
         Ok(())
     }
 
     pub fn finish(mut self) -> Result<()> {
-        if let Some(stdin) = self.child.stdin.take() {
-            drop(stdin);
+        drop(self.sender.take());
+        if let Some(h) = self.writer_thread.take() {
+            h.join().map_err(|_| anyhow::anyhow!("Encoder thread panicked"))??;
         }
 
         let status = self.child.wait()

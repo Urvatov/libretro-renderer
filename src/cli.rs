@@ -2,9 +2,9 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "libretro-renderer", about = "Offline RetroArch shader renderer for video files")]
+#[command(name = "libretro-renderer", about = "Offline RetroArch shader renderer for video and image files")]
 pub struct Args {
-    /// Input video file path
+    /// Input video or image file path
     #[arg(short, long)]
     pub input: PathBuf,
 
@@ -12,7 +12,7 @@ pub struct Args {
     #[arg(short, long)]
     pub shader: PathBuf,
 
-    /// Output video file path
+    /// Output video or image file path
     #[arg(short, long)]
     pub output: PathBuf,
 
@@ -47,4 +47,12 @@ pub struct Args {
     /// Pixel format for encoding (default: yuv420p)
     #[arg(long, default_value = "yuv420p")]
     pub pixel_format: String,
+
+    /// Number of frames in flight (GPU pipeline depth, default: 4)
+    #[arg(long, default_value_t = 4)]
+    pub batch_size: u32,
+
+    /// Hardware acceleration for decoding (e.g. auto, cuda, d3d11va, qsv, none. Default: auto)
+    #[arg(long, default_value = "auto")]
+    pub hwaccel: String,
 }

@@ -1,3 +1,5 @@
+use std::mem::ManuallyDrop;
+
 use ash::{vk, Device, Entry, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use librashader::runtime::vk::VulkanImage;
@@ -11,7 +13,7 @@ pub struct HeadlessVulkan {
     pub queue: vk::Queue,
     #[allow(dead_code)]
     pub queue_family_index: u32,
-    pub allocator: Allocator,
+    pub allocator: ManuallyDrop<Allocator>,
     pub command_pool: vk::CommandPool,
 }
 
@@ -82,7 +84,7 @@ impl HeadlessVulkan {
                 device,
                 queue,
                 queue_family_index,
-                allocator,
+                allocator: ManuallyDrop::new(allocator),
                 command_pool,
             })
         }
@@ -147,7 +149,11 @@ impl HeadlessVulkan {
         }
     }
 
-    pub fn create_staging_buffer(&mut self, size: vk::DeviceSize) -> anyhow::Result<(vk::Buffer, gpu_allocator::vulkan::Allocation)> {
+    pub fn create_staging_buffer(
+        &mut self,
+        size: vk::DeviceSize,
+        location: gpu_allocator::MemoryLocation,
+    ) -> anyhow::Result<(vk::Buffer, gpu_allocator::vulkan::Allocation)> {
         unsafe {
             let buffer_info = vk::BufferCreateInfo::default()
                 .size(size)
@@ -159,7 +165,7 @@ impl HeadlessVulkan {
             let alloc_info = gpu_allocator::vulkan::AllocationCreateDesc {
                 name: "staging-buffer",
                 requirements: mem_reqs,
-                location: gpu_allocator::MemoryLocation::CpuToGpu,
+                location,
                 linear: true,
                 allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
             };
@@ -185,8 +191,7 @@ impl HeadlessVulkan {
 
     pub fn create_fence(&self) -> anyhow::Result<vk::Fence> {
         unsafe {
-            let fence_info = vk::FenceCreateInfo::default()
-                .flags(vk::FenceCreateFlags::SIGNALED);
+            let fence_info = vk::FenceCreateInfo::default();
             Ok(self.device.create_fence(&fence_info, None)?)
         }
     }
@@ -354,6 +359,8 @@ impl HeadlessVulkan {
 impl Drop for HeadlessVulkan {
     fn drop(&mut self) {
         unsafe {
+            let _ = self.device.device_wait_idle();
+            ManuallyDrop::drop(&mut self.allocator);
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);
